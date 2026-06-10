@@ -1,7 +1,7 @@
 import os, sys, json, argparse, requests, urllib3, logging, time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-import ollama
+from openai import OpenAI
 
 urllib3.disable_warnings()
 

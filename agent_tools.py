@@ -5,14 +5,16 @@ import time
 import logging
 from datetime import datetime, timezone, timedelta
 
-import ollama
+# import ollama
+from openai import OpenAI
 
 import client as ag
 
 log = logging.getLogger("agent")
 
 AGENTIC_MODEL = ag.C["AGENTIC_MODEL"]
-OL_HOST       = ag.C["OL_HOST"]
+OA_HOST       = ag.C["OA_HOST"]
+OPENAI_API_KEY = ag.C["OPENAI_API_KEY"]  
 MAX_STEPS     = ag.C["AGENTIC_MAX_STEPS"]   # safety cap on the loop
 
 _agent_cache = {}   # name/id (lower) -> id
@@ -633,7 +635,7 @@ def run_agent(question: str, agent_id: str = None, emit=None):
             elif kind == "error":
                 print(f"\n[ERROR] {payload}")
 
-    client = ollama.Client(host=OL_HOST)
+    client = OpenAI(api_key=OPENAI_API_KEY, base_url=OA_HOST)
 
     user_msg = question
     if agent_id:
@@ -652,11 +654,20 @@ def run_agent(question: str, agent_id: str = None, emit=None):
             return "[stopped]"
 
         try:
-            resp = client.chat(
+            # resp = client.chat(
+            #     model=AGENTIC_MODEL,
+            #     messages=messages,
+            #     tools=TOOL_SCHEMAS,
+            #     options={"temperature": 0, "num_ctx": 16384},
+            # )
+            # print(json.dumps(TOOL_SCHEMAS, indent=2))  #DEBUG
+            resp = client.chat.completions.create(
                 model=AGENTIC_MODEL,
                 messages=messages,
-                tools=TOOL_SCHEMAS,
-                options={"temperature": 0, "num_ctx": 16384},
+                # tools=TOOL_SCHEMAS,   #TODO the model often ignores the tools if we pass them here, so omit for now and rely on the system prompt description — not ideal but it works better. Revisit when the model supports function calls more reliably.
+                # tool_choice="auto",
+                temperature=0,
+                # max_tokens podle potřeby; num_ctx sem nepatří
             )
         except Exception as e:
             _emit("error", f"Model call failed: {e}")
@@ -666,8 +677,10 @@ def run_agent(question: str, agent_id: str = None, emit=None):
             _emit("error", "Stopped by user.")
             return "[stopped]"
 
-        msg = resp.message
-        tool_calls = getattr(msg, "tool_calls", None) or []
+        # msg = resp.message
+        msg = resp.choices[0].message
+        # tool_calls = getattr(msg, "tool_calls", None) or []
+        tool_calls = msg.tool_calls or []
 
         # No tool calls → the model is giving its final answer
         if not tool_calls:
@@ -681,8 +694,16 @@ def run_agent(question: str, agent_id: str = None, emit=None):
         # contains the running hypothesis) so nothing is silently dropped.
         if msg.content and msg.content.strip():
             _emit("thinking", msg.content.strip())
-        messages.append({"role": "assistant", "content": msg.content or "",
-                         "tool_calls": tool_calls})
+        # messages.append({"role": "assistant", "content": msg.content or "",
+        #                  "tool_calls": tool_calls})
+        messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                tc.model_dump() if hasattr(tc, "model_dump") else tc
+                for tc in tool_calls
+            ],
+        })                 
 
         # Execute each requested tool
         for tc in tool_calls:
@@ -715,8 +736,14 @@ def run_agent(question: str, agent_id: str = None, emit=None):
 
             _emit("tool_result", {"name": name, "result": result})
 
-            messages.append({"role": "tool", "name": name,
-                             "content": json.dumps(result)[:4000]})
+            # messages.append({"role": "tool", "name": name,
+            #                  "content": json.dumps(result)[:4000]})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "name": name,
+                "content": json.dumps(result)[:4000],
+            })
 
     # Hit the step cap — force a final text answer.
     # Crucially: do NOT pass tools, so the model cannot ask for more calls and
@@ -731,9 +758,16 @@ def run_agent(question: str, agent_id: str = None, emit=None):
     answer = ""
     for _try in range(2):
         try:
-            resp = client.chat(model=AGENTIC_MODEL, messages=messages,
-                               options={"temperature": 0, "num_predict": 1200})
-            answer = (resp.message.content or "").strip()
+            # resp = client.chat(model=AGENTIC_MODEL, messages=messages,
+            #                    options={"temperature": 0, "num_predict": 1200})
+            resp = client.chat.completions.create(
+                model=AGENTIC_MODEL,
+                messages=messages,
+                temperature=0,
+                max_tokens=1200,
+            )                   
+            # answer = (resp.message.content or "").strip()
+            answer = (resp.choices[0].message.content or "").strip()
             if answer:
                 break
             # Empty — nudge harder
@@ -765,7 +799,7 @@ if __name__ == "__main__":
     question = " ".join(args) or "Are there any signs of compromise in the last 24 hours?"
 
     print(f"Model    : {AGENTIC_MODEL}")
-    print(f"Ollama   : {OL_HOST}")
+    print(f"OpenAI   : {OA_HOST}")
     print(f"Question : {question}")
     if agent:
         print(f"Agent    : {agent}")

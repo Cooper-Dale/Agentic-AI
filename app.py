@@ -758,7 +758,7 @@ def _serve(args):
     print(f"  UI      : http://{args.host}:{args.port}")
     print(f"  Model   : {AGENTIC_MODEL}")
     print(f"  History : {ST.hist_file}")
-    app.run(host=args.host, port=args.port, debug=False, threaded=True)
+    app.run(host=args.host, port=args.port, debug=True, threaded=True)
 
 def main():
     # Accept both styles: "app.py stop" and "app.py --stop".
