@@ -272,3 +272,151 @@ If you want to extend this, good directions include:
 * **Persisted, searchable history.** History is currently a JSON file capped at 50 runs; a small database would scale better and allow search.
 * **Tighter convergence / cost control.** Larger models explore widely; a per-run tool-call budget surfaced in the UI, or a "quick vs. thorough" mode, would give users control over time and cost.
 * **Multi-node / multi-tenant Wazuh.** The data layer assumes one manager and one indexer; supporting clusters would broaden its reach.
+
+## Wazuh access configuration
+
+The AI agent needs read-only access to Wazuh telemetry data. Use dedicated service accounts instead of personal administrator accounts.
+
+The application uses two separate Wazuh access paths:
+
+* **Wazuh server API** for agent metadata, File Integrity Monitoring data, and system inventory.
+* **Wazuh indexer API** for historical alert telemetry from `wazuh-alerts-*`.
+
+Create one dedicated Wazuh server user and one dedicated Wazuh indexer user.
+
+### Creating a Wazuh server policy for the AI agent
+
+The Wazuh server policy grants the AI agent read-only access to agent metadata, File Integrity Monitoring, and system inventory data.
+
+In the Wazuh dashboard, navigate to:
+
+```text
+Server management > Security > Policies
+```
+
+Click **Create policy** and configure it as follows:
+
+| Field               | Value                  |
+| ------------------- | ---------------------- |
+| Policy name         | `wazuh_agentic_policy` |
+| Actions             | `agent:read`           |
+| Actions             | `syscheck:read`        |
+| Actions             | `syscollector:read`    |
+| Resource            | `agent:id`             |
+| Resource identifier | `*`                    |
+| Effect              | `Allow`                |
+
+Click **Create policy**.
+
+### Creating a Wazuh server role for the AI agent
+
+Navigate to:
+
+```text
+Server management > Security > Roles
+```
+
+Click **Create role** and configure it as follows:
+
+| Field     | Value                  |
+| --------- | ---------------------- |
+| Role name | `wazuh_agentic_role`   |
+| Policies  | `wazuh_agentic_policy` |
+
+Click **Create role**.
+
+### Creating a Wazuh server user for the AI agent
+
+Navigate to:
+
+```text
+Server management > Security > Users
+```
+
+Click **Create user** and configure it as follows:
+
+| Field      | Value                    |
+| ---------- | ------------------------ |
+| User name  | `wazuh_agentic`          |
+| Password   | Choose a strong password |
+| User roles | `wazuh_agentic_role`     |
+
+Click **Apply**.
+
+Use this account in `.env` for the Wazuh server API:
+
+```ini
+WAZUH_USER=wazuh_agentic
+WAZUH_PASS=<password>
+```
+
+### Creating a Wazuh indexer user for the AI agent
+source: [Wazuh blog](https://wazuh.com/blog/threat-hunting-with-agentic-ai/)
+
+The AI agent also needs read access to the `wazuh-alerts-*` index in order to retrieve historical alerts, run aggregations, and correlate security events over time.
+
+Navigate to:
+
+```text
+Indexer management > Security > Internal users
+```
+
+Click **Create internal user** and configure it as follows:
+
+| Field    | Value                    |
+| -------- | ------------------------ |
+| Username | `indexer_agentic`        |
+| Password | Choose a strong password |
+
+Click **Create**.
+
+### Creating a Wazuh indexer role for the AI agent
+
+Navigate to:
+
+```text
+Indexer management > Security > Roles
+```
+
+Click **Create role** and configure it as follows:
+
+| Field               | Value                       |
+| ------------------- | --------------------------- |
+| Name                | `indexer_agentic_role`      |
+| Cluster permissions | `cluster_composite_ops_ro`  |
+| Index               | `wazuh-alerts-*`            |
+| Index permissions   | `indices:data/read/search*` |
+
+Click **Create**.
+
+Then open the **Mapped users** tab for the role, click **Map users**, search for the user account:
+
+```text
+indexer_agentic
+```
+
+Select the user and click **Map**.
+
+Use this account in `.env` for the Wazuh indexer API:
+
+```ini
+INDEXER_USER=indexer_agentic
+INDEXER_PASS=<password>
+```
+
+### Resulting `.env` mapping
+
+After creating the Wazuh server and indexer accounts, the Wazuh-related part of `.env` should look like this:
+
+```ini
+# -- Wazuh API (token auth, port 55000) --
+WAZUH_HOST=https://<WAZUH_SERVER_IP>:55000
+WAZUH_USER=wazuh_agentic
+WAZUH_PASS=<wazuh_agentic_password>
+WAZUH_SSL=false       # true only if you verify TLS certs
+
+# -- Wazuh Indexer (basic auth, port 9200) --
+INDEXER_HOST=https://<WAZUH_INDEXER_IP>:9200
+INDEXER_USER=indexer_agentic
+INDEXER_PASS=<indexer_agentic_password>
+```
